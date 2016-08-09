@@ -50,13 +50,13 @@ gpu = args.gpu
 
 hidden_size = 400
 num_layers = 2
-num_infer_layers = 2
+num_infer_layers = 1
 
-batch_size = 32
+batch_size = 24
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
-eval_valid_every_batches = 50000//batch_size # evaluate model on valid data every this batches
-eval_train_every_batches = 10000//batch_size # evaluate model on train data every this batches
+eval_valid_every_batches = 5000//batch_size # evaluate model on valid data every this batches
+eval_train_every_batches = 1000//batch_size # evaluate model on train data every this batches
 max_epoch = 10000
 max_line_length = 100
 
@@ -210,7 +210,7 @@ def forward(model, batch, num_samples, train=True):
         return (KL, (cross_entropies, ys, ts))
 
 
-def evaluate(model, batches, vocab):
+def evaluate(model, batches, vocab, alpha):
 
     xp = model.xp
     use_gpu = (xp == cuda.cupy)
@@ -220,11 +220,13 @@ def evaluate(model, batches, vocab):
     KL = 0
     xent, ys, ts = 0, [], []    
 
-    sum_max_sentence_length = 0
-    
+    sum_sentence_length = 0
+    num_batches = 0
     for batch in batches:
-        cur_max_sentence_length = (batch != ignore_label).sum(axis=1).max()
-        sum_max_sentence_length += cur_max_sentence_length
+        num_batches += 1
+        assert( len(batch) == 1 )
+        cur_sentence_length = (batch != ignore_label).sum(axis=1).max()
+        sum_sentence_length += cur_sentence_length
         cur_KL, (cur_xents, cur_ys, cur_ts) = forward(model, batch, num_samples=1, train=False)
         assert(len(cur_xents) == 1 and len(cur_ys) == 1 and len(cur_ts) == 1)
         cur_xent = cur_xents[0]
@@ -243,8 +245,8 @@ def evaluate(model, batches, vocab):
         KL = cuda.to_cpu(KL)
         xent = cuda.to_cpu(xent)
 
-    KL /= sum_max_sentence_length
-    xent /= sum_max_sentence_length
+    KL /= num_batches
+    xent_per_word = xent / sum_sentence_length
 
     n = len(ys) // 10 
     if n > 0:
@@ -263,9 +265,10 @@ def evaluate(model, batches, vocab):
         print( " ".join([[".", "x"][ ts[i][j] != -1 and ts[i][j] != ys[i][j] ] for j in range(length)]) )
         print()
 
-    print( "KL divergence: {}".format( KL ) )
-    print( "cross entropy: {}".format( xent ) )
-    print( "perplexity   : {}".format( math.pow(2, math.log(math.e, 2) * xent) ) )
+    print( "average length    : {}".format( sum_sentence_length / num_batches) )
+    print( "KL divergence     : {} (alpha = {})".format( KL, alpha ) )
+    print( "xentropy / word   : {}".format( xent_per_word ) )
+    print( "perplexity / word : {}".format( math.pow(2, math.log(math.e, 2) * xent_per_word) ) )
     
 def train(model, batch, num_samples, alpha = 1.0):
 
@@ -278,6 +281,7 @@ def train(model, batch, num_samples, alpha = 1.0):
     KL, xents = forward(model, batch, num_samples=num_samples, train=True)
     loss = alpha * KL + sum(xents) / num_samples
     loss.backward()
+    KL.unchain_backward() # incase alpha == 0
     loss.unchain_backward()
     optimizer.update()
 
@@ -295,7 +299,7 @@ num_saved = 0
 num_trained_sentences = 0
 num_trained_batches = 0
 
-alpha = 0.0
+alpha = 0.01
 for epoch in range(max_epoch):
 
     print( "epoch {}/{}".format( epoch + 1, max_epoch ) )
@@ -320,7 +324,7 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_valid_batch:
 
             print( "eval on validation dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, valid_batches, vocab)
+            evaluate(model, valid_batches, vocab, alpha=alpha)
             print()
 
             next_eval_valid_batch += eval_valid_every_batches
@@ -328,7 +332,7 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_train_batch:
 
             print( "eval on training dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, train_head_batches, vocab)
+            evaluate(model, train_head_batches, vocab, alpha=alpha)
             print()
 
             next_eval_train_batch += eval_train_every_batches
@@ -338,8 +342,11 @@ for epoch in range(max_epoch):
         num_trained_batches += 1
         num_trained_sentences += len(batch.data)
 
-        if (num_trained_batches * batch_size)  % 10000:
+        if (num_trained_batches * batch_size)  % 1000 == 0:
+            prev_alpha = alpha
             alpha = min(alpha + 0.01, 1.0)
+            if prev_alpha != alpha:
+                print("alpha {} -> {}".format(prev_alpha, alpha))
 
         
 print( "saving model and optimizer (last) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
