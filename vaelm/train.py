@@ -48,11 +48,11 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 400
+hidden_size = 300
 num_layers = 2
 num_infer_layers = 1
 
-batch_size = 24
+batch_size = 16
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 5000//batch_size # evaluate model on valid data every this batches
@@ -142,6 +142,8 @@ optimizer.setup(model)
 optimizer.add_hook(chainer.optimizer.GradientClipping(5.))
 
 def forward(model, batch, num_samples, train=True):
+    
+    batch_size = batch.shape[0]
 
     xp = model.xp
     use_gpu = (xp == cuda.cupy)
@@ -169,7 +171,7 @@ def forward(model, batch, num_samples, train=True):
         # c
         miu, sigma = model.cmius[i], model.csigmas[i]
         KL += -F.sum((1 + 2 * F.log(sigma) - sigma*sigma - miu*miu) / 2)
-
+    KL /= batch_size
     # draw and decode
     cross_entropies = []
     if not train:
