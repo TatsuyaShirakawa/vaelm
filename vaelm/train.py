@@ -18,7 +18,7 @@ from chainer import Variable, functions as F, cuda, optimizers, serializers
 
 from dataset import Vocab, MinibatchFeeder
 #from vaelm import VAELM
-from vaelm2 import VAELM as VAELM
+from vaelm import VAELM
 from util import maybe_create_dir
 
 def parse_args(args):
@@ -52,12 +52,12 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 256
+hidden_size = 32
 z_size = 16
 num_layers = 2
 num_infer_layers = 1
 
-batch_size = 128
+batch_size = 16
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 25000//batch_size # evaluate model on valid data every this batches
@@ -285,9 +285,9 @@ def evaluate(model, batches, vocab, word_keep_rate, UNK, alpha):
         assert( ys[i].shape == ts[i].shape )
         length = len(ts[i])
         print( "actual:" )
-        print( " ".join([vocab.get_word(ts[i][j]).encode('utf-8') for j in range(length)]) )
+        print( b" ".join([vocab.get_word(ts[i][j]).encode('utf-8') for j in range(length)]) )
         print( "decode:" )
-        print( " ".join([vocab.get_word(ys[i][j]).encode('utf-8') for j in range(length)]) )
+        print( b" ".join([vocab.get_word(ys[i][j]).encode('utf-8') for j in range(length)]) )
         print( " ".join([[".", "x"][ ts[i][j] != -1 and ts[i][j] != ys[i][j] ] for j in range(length)]) )
         print()
 

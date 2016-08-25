@@ -1,6 +1,7 @@
 ## vaelm
 
 Chainer-implementation of the language model introduced in the following paper:
+
     [Samuel R. Bowman+, "Generating Sentences from a Continuous Space", ICLR2016](https://arxiv.org/pdf/1511.06349.pdf)
 
 ## Requirements (for Python)
@@ -10,9 +11,9 @@ Chainer-implementation of the language model introduced in the following paper:
 - six
 - numpy
 - msgpack-python
-- nltk.tokenize
+- nltk.punkt (do nltk.download() and select d)ownload and punkt)
 
-## Example
+## Example (Training)
 
 ```
 cd /path/to/this_directory/
