@@ -48,12 +48,10 @@ class Vocab(object):
         return len(self.__word2id)
 
     def entry(self, word, count=1):
-        assert(type(word) == str)
         id = self.__word2id.get(word, len(self.__word2id))
         self.__set(id=id, word=word, count=self.__id2count.get(id, 0) + count)
 
     def __set(self, id, word, count):
-        assert(type(word) == str)
         self.__word2id[word] = id
         self.__id2word[id] = word
         self.__id2count[id] = count

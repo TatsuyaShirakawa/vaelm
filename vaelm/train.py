@@ -52,17 +52,17 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 32
-z_size = 16
+hidden_size = 512
+z_size = 8
 num_layers = 2
-num_infer_layers = 1
+num_infer_layers = 2
 
-batch_size = 16
+batch_size = 128
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
-eval_valid_every_batches = 25000//batch_size # evaluate model on valid data every this batches
-eval_train_every_batches = 50000//batch_size # evaluate model on train data every this batches
-max_epoch = 10000
+eval_valid_every_batches = 100000//batch_size # evaluate model on valid data every this batches
+eval_train_every_batches = 50000//batgch_size # evaluate model on train data every this batches
+max_epoch = 1000
 max_line_length = 100
 
 train_file = args.train_file
@@ -131,7 +131,6 @@ train_head_batches = MinibatchFeeder(open(train_file, 'rb'),
 valid_batches = MinibatchFeeder(open(valid_file, 'rb'), 
                                 batch_size=1, # prevent 'backeting'
                                 max_line_length=max_line_length,
-                                max_num_lines = 100,
                                 on_memory = on_memory)
 
 print( "train      : {} lines".format(train_batches.num_epoch_lines) )
