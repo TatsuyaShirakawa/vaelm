@@ -16,74 +16,85 @@ class Encoder(Chain):
         self.ignore_label = ignore_label
 
         args = {'embed': L.EmbedID(vocab_size, hidden_size, ignore_label=ignore_label)}
-        args.update({'_xh{}'.format(i): L.Linear(hidden_size, 4*hidden_size) for i in range(self.num_layers)})
-        args.update({'_hh{}'.format(i): L.Linear(hidden_size, 4*hidden_size) for i in range(self.num_layers)})
+        for i in range(self.num_layers):
+            args.update({'l{}'.format(i): L.StatelessLSTM(hidden_size, hidden_size)})
+            setattr(self, 'h{}'.format(i), None)
+            setattr(self, 'c{}'.format(i), None)
 
         super(Encoder, self).__init__(**args)
 
-        self.hs = [None for i in range(self.num_layers)] # hidden states
-        self.cs = [None for i in range(self.num_layers)] # memory states
-
-        self.xhs = [getattr(self, '_xh{}'.format(i)) for i in range(self.num_layers)]
-        self.hhs = [getattr(self, '_hh{}'.format(i)) for i in range(self.num_layers)]
-        
         for param in self.params():
             param.data[...] = np.random.uniform(-0.1, 0.1, param.data.shape)
+
+    def get_l(self, i):
+        return getattr(self, "l{}".format(i))
+
+    def get_h(self, i):
+        return getattr(self, "h{}".format(i))
+
+    def get_c(self, i):
+        return getattr(self, "c{}".format(i))
+
+    def set_h(self, i, h):
+        return setattr(self, "h{}".format(i), h)
+
+    def set_c(self, i, c):
+        return setattr(self, "c{}".format(i), c)
 
     def to_cpu(self):
         super(Encoder, self).to_cpu()
         for i in range(self.num_layers):
-            if self.hs[i] is not None: self.hs[i].to_cpu()
-            if self.cs[i] is not None: self.cs[i].to_cpu()
+            h = self.get_h(i)
+            c = self.get_c(i)
+            if h is not None: h.to_cpu()
+            if c is not None: c.to_cpu()
 
     def to_gpu(self):
         super(Encoder, self).to_gpu()
         for i in range(self.num_layers):
-            if self.hs[i] is not None: self.hs[i].to_gpu()
-            if self.cs[i] is not None: self.cs[i].to_gpu()
+            h = self.get_h(i)
+            c = self.get_c(i)
+            if h is not None: h.to_gpu()
+            if c is not None: c.to_gpu()
 
     def reset_state(self):
         for i in range(self.num_layers):
-            self.hs[i] = None
-            self.cs[i] = None
+            self.set_h(i, None)
+            self.set_c(i, None)
 
     def maybe_init_state(self, batch_size, dtype):
         
         for i in range(self.num_layers):
-            if self.hs[i] is None:
+            if self.get_h(i) is None:
                 xp = self.xp
-                self.hs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
-            if self.cs[i] is None:
+                self.set_h(i, Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype)))
+            if self.get_c(i) is None:
                 xp = self.xp
-                self.cs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
+                self.set_c(i, Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype)))
 
-    def __call__(self, w, train=True, dpratio=0.2):
+    def __call__(self, w, train=True, dpratio=0.5):
 
         x = self.embed(w)
-
         self.maybe_init_state(len(x.data), x.data.dtype)
 
         for i in range(self.num_layers):
 
-            c = F.dropout(self.cs[i], train=train, ratio=dpratio)
-            h = self.xhs[i](F.dropout(x, train=train, ratio=dpratio))
-            + self.hhs[i](F.dropout(self.hs[i], train=train, ratio=dpratio))
-
-            assert( c.data.shape == (len(x.data), self.hidden_size) )
-            assert( h.data.shape == (len(x.data), 4*self.hidden_size) )
-
-            c, h = F.lstm(c, h)
-
-            assert( c.data.shape == (len(x.data), self.hidden_size) )
-            assert( h.data.shape == (len(x.data), self.hidden_size) )
-            if self.ignore_label != None:
+            if self.ignore_label is not None:
                 enable = (x.data != 0)
-                self.cs[i] = F.where(enable, c , self.cs[i])
-                self.hs[i] = F.where(enable, h , self.hs[i])
+
+            c = F.dropout(self.get_c(i), train=train, ratio=dpratio)
+            h = F.dropout(self.get_h(i), train=train, ratio=dpratio)
+            x = F.dropout(x, train=train, ratio=dpratio)
+            c, h = self.get_l(i)(c, h, x)
+
+            if self.ignore_label != None:
+                self.set_c(i, F.where(enable, c, self.get_c(i)))
+                self.set_h(i, F.where(enable, h, self.get_h(i)))
             else:
-                self.cs[i] = c
-                self.hs[i] = h
-            x = self.hs[i]
+                self.set_c(i, c)
+                self.set_h(i, h)
+
+            x = self.get_h(i)
         
 
 
@@ -96,88 +107,126 @@ class RNNLM(Chain):
         self.num_layers = num_layers
         self.ignore_label = ignore_label
 
-        args = {'embed': L.EmbedID(vocab_size, hidden_size, ignore_label=ignore_label),
-                'hy': L.Linear(hidden_size, vocab_size),
-        }
-        args.update({'_xh{}'.format(i): L.Linear(hidden_size, 4*hidden_size) for i in range(self.num_layers)})
-        args.update({'_hh{}'.format(i): L.Linear(hidden_size, 4*hidden_size) for i in range(self.num_layers)})
+        args = {'embed': L.EmbedID(vocab_size, hidden_size, ignore_label=ignore_label),        
+                'hy': L.Linear(hidden_size, vocab_size)}
+
+        for i in range(self.num_layers):
+            args.update({'l{}'.format(i): L.StatelessLSTM(hidden_size, hidden_size)})
+            setattr(self, 'h{}'.format(i), None)
+            setattr(self, 'c{}'.format(i), None)
 
         super(RNNLM, self).__init__(**args)
         
-        self.hs = [None for i in range(self.num_layers)] # hidden states
-        self.cs = [None for i in range(self.num_layers)] # memory states
-
-        self.xhs = [getattr(self, '_xh{}'.format(i)) for i in range(self.num_layers)] 
-        self.hhs = [getattr(self, '_hh{}'.format(i)) for i in range(self.num_layers)] 
-
         for param in self.params():
             param.data[...] = np.random.uniform(-0.1, 0.1, param.data.shape)
 
         self.reset_state()
 
+    def get_l(self, i):
+        return getattr(self, "l{}".format(i))
+
+    def get_h(self, i):
+        return getattr(self, "h{}".format(i))
+
+    def get_c(self, i):
+        return getattr(self, "c{}".format(i))
+
+    def set_h(self, i, h):
+        return setattr(self, "h{}".format(i), h)
+
+    def set_c(self, i, c):
+        return setattr(self, "c{}".format(i), c)
+
     def to_cpu(self):
         super(RNNLM, self).to_cpu()
         for i in range(self.num_layers):
-            if self.hs[i] is not None: self.hs[i].to_cpu()
-            if self.cs[i] is not None: self.cs[i].to_cpu()
+            h = self.get_h(i)
+            c = self.get_c(i)
+            if h is not None: h.to_cpu()
+            if c is not None: c.to_cpu()
 
     def to_gpu(self):
         super(RNNLM, self).to_gpu()
         for i in range(self.num_layers):
-            if self.hs[i] is not None: self.hs[i].to_gpu()
-            if self.cs[i] is not None: self.cs[i].to_gpu()
+            h = self.get_h(i)
+            c = self.get_c(i)
+            if h is not None: h.to_gpu()
+            if c is not None: c.to_gpu()
 
     def reset_state(self):
         for i in range(self.num_layers):
-            self.hs[i] = None
-            self.cs[i] = None
+            self.set_h(i, None)
+            self.set_c(i, None)
 
     def maybe_init_state(self, batch_size, dtype):
-        
         for i in range(self.num_layers):
-            if self.hs[i] is None:
+            if self.get_h(i) is None:
                 xp = self.xp
-                self.hs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
-            if self.cs[i] is None:
+                self.set_h(i, Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype)))
+            if self.get_c(i) is None:
                 xp = self.xp
-                self.cs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
+                self.set_c(i, Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype)))
 
-    def __call__(self, w, train=True, dpratio=0.2):
+    def __call__(self, w, train=True, dpratio=0.5):
 
         x = self.embed(w)
-
         self.maybe_init_state(len(x.data), x.data.dtype)
 
         for i in range(self.num_layers):
 
-            c = F.dropout(self.cs[i], train=train, ratio=dpratio)
-            h = self.xhs[i](F.dropout(x, train=train, ratio=dpratio))
-            + self.hhs[i](F.dropout(self.hs[i], train=train, ratio=dpratio))
-
-            assert( c.data.shape == (len(x.data), self.hidden_size) )
-            assert( h.data.shape == (len(x.data), 4*self.hidden_size) )
-
-            c, h = F.lstm(c, h)
-
-            assert( c.data.shape == (len(x.data), self.hidden_size) )
-            assert( h.data.shape == (len(x.data), self.hidden_size) )
-            if self.ignore_label != None:
+            if self.ignore_label is not None:
                 enable = (x.data != 0)
-                self.cs[i] = F.where(enable, c , self.cs[i])
-                self.hs[i] = F.where(enable, h , self.hs[i])
+
+            c = F.dropout(self.get_c(i), train=train, ratio=dpratio)
+            h = F.dropout(self.get_h(i), train=train, ratio=dpratio)
+            x = F.dropout(x, train=train, ratio=dpratio)
+            c, h = self.get_l(i)(c, h, x)
+
+            if self.ignore_label != None:
+                self.set_c(i, F.where(enable, c, self.get_c(i)))
+                self.set_h(i, F.where(enable, h, self.get_h(i)))
             else:
-                self.cs[i] = c
-                self.hs[i] = h
-            x = self.hs[i]
+                self.set_c(i, c)
+                self.set_h(i, h)
+
+            x = self.get_h(i)
+            
+        x = F.dropout(x, train=train, ratio=dpratio)
         return self.hy(x)
-                                         
+
+class Transformer(Chain):
+
+    def __init__(self, hidden_size, z_size, num_layers):
+
+        self.hidden_size = hidden_size
+        self.z_size = z_size
+        self.num_layers = num_layers
+
+        args = {'lmu': L.Linear(hidden_size, z_size),
+                'lsigma': L.Linear(hidden_size, z_size)}
+
+        for i in range(self.num_layers):
+            args.update({'l{}'.format(i): L.Linear(hidden_size, hidden_size)})
+
+        super(Transformer, self).__init__(**args)
+
+    def get_l(self, i):
+        return getattr(self, "l{}".format(i))
+
+    def __call__(self, h, train=True, dpratio=0.5):
+        h = F.dropout(h, train=train, ratio=dpratio)
+        for i in range(self.num_layers):
+            h = F.tanh(self.get_l(i)(h))
+        return (self.lmu(h), F.exp(self.lsigma(h)))
+            
 
 class VAELM(Chain):
     
-    def __init__(self, vocab_size, hidden_size, num_layers, num_infer_layers, ignore_label=-1):
+    def __init__(self, vocab_size, hidden_size, z_size, num_layers, num_infer_layers=0, ignore_label=-1):
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
+        self.z_size = z_size
         self.num_layers = num_layers
         self.num_infer_layers = num_infer_layers
         self.ignore_label = ignore_label
@@ -187,20 +236,14 @@ class VAELM(Chain):
             }
 
         for i in range(num_layers):
-            args.update({'_hin{}'.format(i) : L.Linear(hidden_size, 2*hidden_size),
-                         '_cin{}'.format(i) : L.Linear(hidden_size, 2*hidden_size),
-                         '_hout_miu{}'.format(i) : L.Linear(2*hidden_size, hidden_size),
-                         '_hout_sigma{}'.format(i) : L.Linear(2*hidden_size, hidden_size),
-                         '_cout{}'.format(i) : L.Linear(2*hidden_size, hidden_size),
-                         '_cout_miu{}'.format(i) : L.Linear(2*hidden_size, hidden_size),
-                         '_cout_sigma{}'.format(i) : L.Linear(2*hidden_size, hidden_size),
-                     })
-            for j in range(num_infer_layers):
-                args.update({'l{}_{}'.format(i, j) : L.Linear(2*hidden_size, 2*hidden_size)})
+            args.update({'htrans{}'.format(i) : Transformer(hidden_size, z_size, num_infer_layers)})
+            args.update({'ctrans{}'.format(i) : Transformer(hidden_size, z_size, num_infer_layers)})
+            args.update({'zh{}'.format(i) : L.Linear(z_size, hidden_size)})
+            args.update({'zc{}'.format(i) : L.Linear(z_size, hidden_size)})
 
-        self.hmius = [None for i in range(num_layers)]
+        self.hmus = [None for i in range(num_layers)]
         self.hsigmas = [None for i in range(num_layers)]
-        self.cmius = [None for i in range(num_layers)]
+        self.cmus = [None for i in range(num_layers)]
         self.csigmas = [None for i in range(num_layers)]
     
         super(VAELM, self).__init__(**args)
@@ -208,84 +251,79 @@ class VAELM(Chain):
         for param in self.params():
             param.data[...] = np.random.uniform(-0.1, 0.1, param.data.shape)
 
-        self.reset_state()
-        
-        self.hins = [getattr(self, '_hin{}'.format(i)) for i in range(num_layers)]
-        self.cins = [getattr(self, '_cin{}'.format(i)) for i in range(num_layers)]
-        self.hout_mius = [getattr(self, '_hout_miu{}'.format(i)) for i in range(num_layers)]
-        self.hout_sigmas = [getattr(self, '_hout_sigma{}'.format(i)) for i in range(num_layers)]
-        self.cout_mius = [getattr(self, '_cout_miu{}'.format(i)) for i in range(num_layers)]
-        self.cout_sigmas = [getattr(self, '_cout_sigma{}'.format(i)) for i in range(num_layers)]
-        self.ls = []
-        for i in range(num_layers):
-            cur_ls = []
-            for j in range(num_infer_layers):
-                cur_ls.append(getattr(self, 'l{}_{}'.format(i, j)))
-            self.ls.append(cur_ls)
+    def get_htrans(self, i):
+        return getattr(self, "htrans{}".format(i))
+
+    def get_ctrans(self, i):
+        return getattr(self, "ctrans{}".format(i))
+
+    def get_zh(self, i):
+        return getattr(self, "zh{}".format(i))
+
+    def get_zc(self, i):
+        return getattr(self, "zc{}".format(i))
 
     def to_cpu(self):
         super(VAELM, self).to_cpu()
         self.encoder.to_cpu()
         self.decoder.to_cpu()
+        for i in range(self.num_layers):
+            self.get_htrans(i).to_cpu()
+            self.get_ctrans(i).to_cpu()
 
     def to_gpu(self):
         super(VAELM, self).to_gpu()
         self.encoder.to_gpu()
         self.decoder.to_gpu()
+        for i in range(self.num_layers):
+            self.get_htrans(i).to_gpu()
+            self.get_ctrans(i).to_gpu()
         
     def reset_state(self):
         self.encoder.reset_state()
         self.decoder.reset_state()
         for i in range(self.num_layers):
-            self.hmius[i] = None
+            self.hmus[i] = None
             self.hsigmas[i] = None
-            self.cmius[i] = None
+            self.cmus[i] = None
             self.csigmas[i] = None
 
     def infer(self, train=True):
 
         for i in range(self.num_layers):
-            
-            h0 = self.hins[i](self.encoder.hs[i])
-            c0 = self.cins[i](self.encoder.cs[i])
-            
-            h = F.relu(h0 + c0)
-            for j in range(self.num_infer_layers):
-                h = F.relu(self.ls[i][j](h))
 
-            self.hmius[i] = self.hout_mius[i](h)
-            self.hsigmas[i] = F.exp(self.hout_sigmas[i](h))
-            self.cmius[i] = self.cout_mius[i](h)
-            self.csigmas[i] = F.exp(self.cout_sigmas[i](h))
+            h = self.encoder.get_h(i)
+            hmu, hsigma = self.get_htrans(i)(h)
+            self.hmus[i] = hmu
+            self.hsigmas[i] = hsigma
 
-        return ((self.hmius, self.hsigmas), (self.cmius, self.csigmas))
+            c = self.encoder.get_c(i)
+            cmu, csigma = self.get_ctrans(i)(c, train=train)
+            self.cmus[i] = cmu
+            self.csigmas[i] = csigma
 
-    def MLE_and_set(self, train=True):
+    def set_by_MLE(self, train=True):
         for i in range(self.num_layers):
-            for i in range(self.num_layers):
-                # h
-                miu = self.hmius[i]
-                self.decoder.hs[i] = miu
-                # c
-                miu = self.cmius[i]
-                self.decoder.cs[i] = miu
+            self.decoder.set_h(i, self.get_zh(i)(self.hmus[i]))
+            self.decoder.set_c(i, self.get_zc(i)(self.cmus[i]))
 
-    def draw_and_set(self, train=True):
+    def set_by_sample(self, train=True):
         xp = self.xp
         use_gpu = (xp == cuda.cupy)
         for i in range(self.num_layers):
             # h
-            miu, sigma = self.hmius[i], self.hsigmas[i]
-            es = np.random.normal(0., 1., self.hidden_size).astype(np.float32)
+            mu, sigma = self.hmus[i], self.hsigmas[i]
+            e = np.random.normal(0., 1., self.z_size).astype(np.float32)
             if use_gpu:
-                es = cuda.to_gpu(es)
-            self.decoder.hs[i] = miu + es * sigma
+                e = cuda.to_gpu(e)
+            self.decoder.set_h(i, self.get_zh(i)(mu + e * sigma))
+
             # c
-            miu, sigma = self.cmius[i], self.csigmas[i]
-            es = np.random.normal(0., 1., self.hidden_size).astype(np.float32)
+            mu, sigma = self.cmus[i], self.csigmas[i]
+            e = np.random.normal(0., 1., self.z_size).astype(np.float32)
             if use_gpu:
-                es = cuda.to_gpu(es)
-            self.decoder.cs[i] = miu + es * sigma
+                e = cuda.to_gpu(e)
+            self.decoder.set_c(i, self.get_zc(i)(mu + e * sigma))
 
     def encode(self, w, train=True):
         return self.encoder(w, train=train)

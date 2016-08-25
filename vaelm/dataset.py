@@ -13,7 +13,11 @@ import numpy as np
 import msgpack
 
 def sepline(line):
-    return word_tokenize(line.strip().lower())
+    s = line.strip().lower()
+    s = s.replace('<unk>', 'UNK')
+    result = word_tokenize(s)
+    result = [x if x != 'UNK' else '<unk>' for x in result]
+    return result
 
 class Vocab(object):
 

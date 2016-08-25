@@ -17,7 +17,8 @@ import chainer
 from chainer import Variable, functions as F, cuda, optimizers, serializers
 
 from dataset import Vocab, MinibatchFeeder
-from vaelm import VAELM
+#from vaelm import VAELM
+from vaelm2 import VAELM as VAELM
 from util import maybe_create_dir
 
 def parse_args(args):
@@ -38,9 +39,12 @@ def parse_args(args):
                         help='encoding')
     parser.add_argument('--on_memory', '-o', type=bool, action='store', default=False,
                         help='if this flag is set true, dataset was loaded on memory')
-    parser.add_argument('--num_samples', '-n', type=int, action='store', default=5,
+    parser.add_argument('--num_samples', '-n', type=int, action='store', default=1,
                         help='number of samples generated for compute loss')
+    parser.add_argument('--word_keep_rate', '-w', type=float, action='store', default=0.8,
+                        help='conditioned-on word will be replaced by <UNK> w.p. this rate at decoding phase')
     result = parser.parse_args()
+    assert(result.word_keep_rate >= 0 and result.word_keep_rate <= 1)
 
     return result
 
@@ -48,15 +52,16 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 300
+hidden_size = 256
+z_size = 16
 num_layers = 2
 num_infer_layers = 1
 
-batch_size = 16
+batch_size = 128
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
-eval_valid_every_batches = 5000//batch_size # evaluate model on valid data every this batches
-eval_train_every_batches = 1000//batch_size # evaluate model on train data every this batches
+eval_valid_every_batches = 25000//batch_size # evaluate model on valid data every this batches
+eval_train_every_batches = 50000//batch_size # evaluate model on train data every this batches
 max_epoch = 10000
 max_line_length = 100
 
@@ -72,9 +77,12 @@ on_memory = args.on_memory
 
 num_samples = args.num_samples
 
+word_keep_rate = args.word_keep_rate
+
 print( "settings:" )
 print( "    gpu                     : {}".format(gpu) )
 print( "    hidden_size             : {}".format(hidden_size) )
+print( "    z_size                  : {}".format(z_size) )
 print( "    num_layers              : {}".format(num_layers) )
 print( "    num_infer_layers        : {}".format(num_infer_layers) )
 print( "    batch_size              : {}".format(batch_size) )
@@ -91,6 +99,7 @@ print( "    save_dir                : {}".format(save_dir) )
 print( "    encoding                : {}".format(encoding) )
 print( "    on_memory               : {}".format(on_memory) )
 print( "    num_samples             : {}".format(num_samples) )
+print( "    word_keep_rate          : {}".format(word_keep_rate) )
     
 
 if gpu >= 0:
@@ -106,6 +115,8 @@ vocab = Vocab().load_pack(open(vocab_file, 'rb'), encoding=encoding)
 vocab_size = len(vocab)
 print(' vocab size: {}'.format(vocab_size) )
 
+UNK = vocab.unk_id
+
 train_batches = MinibatchFeeder(open(train_file, 'rb'), 
                                 batch_size=batch_size, 
                                 max_line_length=max_line_length,
@@ -114,13 +125,13 @@ train_batches = MinibatchFeeder(open(train_file, 'rb'),
 train_head_batches = MinibatchFeeder(open(train_file, 'rb'), 
                                      batch_size=1, # prevent 'backeting'
                                      max_line_length=max_line_length, 
-                                     max_num_lines=10,
+                                     max_num_lines=100,
 #                                     max_num_lines=1000,
                                      on_memory = on_memory)
 valid_batches = MinibatchFeeder(open(valid_file, 'rb'), 
                                 batch_size=1, # prevent 'backeting'
                                 max_line_length=max_line_length,
-                                max_num_lines = 10,
+                                max_num_lines = 100,
                                 on_memory = on_memory)
 
 print( "train      : {} lines".format(train_batches.num_epoch_lines) )
@@ -130,18 +141,18 @@ print( "valid      : {} lines".format(valid_batches.num_epoch_lines) )
 
 ignore_label = vocab.padding_id
 
-model = VAELM(vocab_size, hidden_size,
+model = VAELM(vocab_size, hidden_size, z_size,
               num_layers=num_layers, 
               num_infer_layers=num_infer_layers,
               ignore_label=ignore_label)
 if gpu >= 0:
     model.to_gpu()
 
-optimizer = optimizers.Adam(beta1=0.5) # beta1 = 0.5 may do better 
+optimizer = optimizers.Adam() # beta1 = 0.5 may do better 
 optimizer.setup(model)
-optimizer.add_hook(chainer.optimizer.GradientClipping(5.))
+optimizer.add_hook(chainer.optimizer.GradientClipping(2.))
 
-def forward(model, batch, num_samples, train=True):
+def forward(model, batch, num_samples, word_keep_rate, UNK, train=True):
     
     batch_size = batch.shape[0]
 
@@ -159,23 +170,29 @@ def forward(model, batch, num_samples, train=True):
         w = Variable(batch[:, i])
         model.encode(w, train=train)
     
-    # infer
+    # infer q(z|x)
     model.infer(train=train)
 
     # compute KL
     KL = 0
     for i in range(model.num_layers):
         # h
-        miu, sigma = model.hmius[i], model.hsigmas[i]
-        KL += -F.sum((1 + 2 * F.log(sigma) - sigma*sigma - miu*miu) / 2)
+        mu, sigma = model.hmus[i], model.hsigmas[i]
+        KL += -F.sum((1 + 2 * F.log(sigma) - sigma*sigma - mu*mu) / 2)
+
         # c
-        miu, sigma = model.cmius[i], model.csigmas[i]
-        KL += -F.sum((1 + 2 * F.log(sigma) - sigma*sigma - miu*miu) / 2)
+        mu, sigma = model.cmus[i], model.csigmas[i]
+        KL += -F.sum((1 + 2 * F.log(sigma) - sigma*sigma - mu*mu) / 2)
+
     KL /= batch_size
     # draw and decode
     cross_entropies = []
     if not train:
         ys, ts = [], []
+
+    UNKs = np.array([UNK for _ in range(batch_size)], dtype=np.int32)
+    if use_gpu:
+        UNKs = cuda.to_gpu(UNKs)
     for _ in range(num_samples):
 
         cross_entropies.append(0)
@@ -184,14 +201,19 @@ def forward(model, batch, num_samples, train=True):
             ts.append([])
 
         if train == True:
-            model.draw_and_set(train=train)
+            model.set_by_sample(train=train)
         else:
-            model.MLE_and_set(train=train)
+            model.set_by_MLE(train=train)
 
         last_w = None
         for i in range(batch_length):
             w, next_w = Variable(batch[:, i]), Variable(batch[:, i+1])
-            y = model.decode(w, train=train)
+            # word dropout
+            masked_w = batch[:, i]
+            if np.random.uniform() > word_keep_rate:
+                enable = (masked_w != -1)
+                masked_w = F.where(enable, masked_w, UNKs)
+            y = model.decode(masked_w, train=train)
             cross_entropies[-1] += F.softmax_cross_entropy(y, next_w)
             if not train:
                 ys[-1].append(xp.argmax(y.data, axis=1))
@@ -212,7 +234,7 @@ def forward(model, batch, num_samples, train=True):
         return (KL, (cross_entropies, ys, ts))
 
 
-def evaluate(model, batches, vocab, alpha):
+def evaluate(model, batches, vocab, word_keep_rate, UNK, alpha):
 
     xp = model.xp
     use_gpu = (xp == cuda.cupy)
@@ -222,14 +244,16 @@ def evaluate(model, batches, vocab, alpha):
     KL = 0
     xent, ys, ts = 0, [], []    
 
-    sum_sentence_length = 0
+    sum_sentence_length_minus_1 = 0
     num_batches = 0
     for batch in batches:
         num_batches += 1
         assert( len(batch) == 1 )
         cur_sentence_length = (batch != ignore_label).sum(axis=1).max()
-        sum_sentence_length += cur_sentence_length
-        cur_KL, (cur_xents, cur_ys, cur_ts) = forward(model, batch, num_samples=1, train=False)
+        sum_sentence_length_minus_1 += cur_sentence_length - 1
+        cur_KL, (cur_xents, cur_ys, cur_ts) = forward(model, batch, num_samples=1, word_keep_rate=word_keep_rate, UNK=UNK, train=False)
+        assert(cuda.to_cpu(cur_KL.data) >= 0)
+        assert(all(cuda.to_cpu(_.data) for _ in cur_xents))
         assert(len(cur_xents) == 1 and len(cur_ys) == 1 and len(cur_ts) == 1)
         cur_xent = cur_xents[0]
         cur_ys = cur_ys[0]
@@ -241,14 +265,14 @@ def evaluate(model, batches, vocab, alpha):
         KL += cur_KL.data
         xent += cur_xent.data
         ys.extend(cur_ys)
-        ts.extend(cur_ts)               
+        ts.extend(cur_ts)
 
     if use_gpu:
         KL = cuda.to_cpu(KL)
         xent = cuda.to_cpu(xent)
 
     KL /= num_batches
-    xent_per_word = xent / sum_sentence_length
+    xent_per_word = xent / sum_sentence_length_minus_1
 
     n = len(ys) // 10 
     if n > 0:
@@ -267,12 +291,14 @@ def evaluate(model, batches, vocab, alpha):
         print( " ".join([[".", "x"][ ts[i][j] != -1 and ts[i][j] != ys[i][j] ] for j in range(length)]) )
         print()
 
-    print( "average length    : {}".format( sum_sentence_length / num_batches) )
+    print( "average length    : {}".format( (sum_sentence_length_minus_1 + 1) / num_batches) )
+    print( "loss              : {} (alpha = {})".format( alpha*KL + xent/num_batches, alpha ) )
     print( "KL divergence     : {} (alpha = {})".format( KL, alpha ) )
+    print( "xentropy          : {}".format( xent/num_batches ) )
     print( "xentropy / word   : {}".format( xent_per_word ) )
     print( "perplexity / word : {}".format( math.pow(2, math.log(math.e, 2) * xent_per_word) ) )
     
-def train(model, batch, num_samples, alpha = 1.0):
+def train(model, batch, num_samples, word_keep_rate, UNK, alpha):
 
     xp = model.xp
     use_gpu = (xp == cuda.cupy)
@@ -280,12 +306,12 @@ def train(model, batch, num_samples, alpha = 1.0):
     if use_gpu:
         batch = cuda.to_gpu(batch)
 
-    KL, xents = forward(model, batch, num_samples=num_samples, train=True)
+    KL, xents = forward(model, batch, num_samples=num_samples, word_keep_rate=word_keep_rate, UNK=UNK, train=True)
     loss = alpha * KL + sum(xents) / num_samples
     loss.backward()
-    KL.unchain_backward() # incase alpha == 0
-    loss.unchain_backward()
     optimizer.update()
+    loss.unchain_backward()
+    if alpha == 0: KL.unchain_backward()
 
 def save_hdf5(filename, obj):
     gpu = (hasattr(obj, "xp") and obj.xp == cuda.cupy)
@@ -301,7 +327,7 @@ num_saved = 0
 num_trained_sentences = 0
 num_trained_batches = 0
 
-alpha = 0.01
+alpha = 0.0
 for epoch in range(max_epoch):
 
     print( "epoch {}/{}".format( epoch + 1, max_epoch ) )
@@ -326,7 +352,7 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_valid_batch:
 
             print( "eval on validation dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, valid_batches, vocab, alpha=alpha)
+            evaluate(model, valid_batches, vocab, word_keep_rate=word_keep_rate, UNK=UNK, alpha=alpha)
             print()
 
             next_eval_valid_batch += eval_valid_every_batches
@@ -334,17 +360,17 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_train_batch:
 
             print( "eval on training dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, train_head_batches, vocab, alpha=alpha)
+            evaluate(model, train_head_batches, vocab, word_keep_rate=word_keep_rate, UNK=UNK, alpha=alpha)
             print()
 
             next_eval_train_batch += eval_train_every_batches
 
-        train(model, batch, num_samples=num_samples, alpha=alpha)
+        train(model, batch, num_samples=num_samples, word_keep_rate=word_keep_rate, UNK=UNK, alpha=alpha)
 
         num_trained_batches += 1
         num_trained_sentences += len(batch.data)
 
-        if (num_trained_batches * batch_size)  % 1000 == 0:
+        if (num_trained_batches * batch_size)  % 2000 == 0:
             prev_alpha = alpha
             alpha = min(alpha + 0.01, 1.0)
             if prev_alpha != alpha:
@@ -362,9 +388,9 @@ print( "save optimizer to {} ...".format(optimizer_file) )
 save_hdf5(optimizer_file, optimizer)
 
 print( "eval on validation dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-evaluate(model, valid_batches, vocab)
+evaluate(model, valid_batches, word_keep_rate=word_keep_rate, UNK=UNK, alpha=1.0)
 print()
 
 print( "eval on training dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-evaluate(model, train_head_batches, vocab)
+evaluate(model, train_head_batches, word_keep_rate=word_keep_rate, UNK=UNK, alpha=1.0)
 print()        
