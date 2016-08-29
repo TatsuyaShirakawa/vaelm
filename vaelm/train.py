@@ -61,7 +61,7 @@ batch_size = 128
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 100000//batch_size # evaluate model on valid data every this batches
-eval_train_every_batches = 50000//batgch_size # evaluate model on train data every this batches
+eval_train_every_batches = 50000//batch_size # evaluate model on train data every this batches
 max_epoch = 1000
 max_line_length = 100
 
