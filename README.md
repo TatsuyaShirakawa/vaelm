@@ -2,7 +2,7 @@
 
 Chainer-implementation of the language model introduced in the following paper:
 
-    [Samuel R. Bowman+, "Generating Sentences from a Continuous Space", ICLR2016](https://arxiv.org/pdf/1511.06349.pdf)
+[Samuel R. Bowman+, "Generating Sentences from a Continuous Space", ICLR2016](https://arxiv.org/pdf/1511.06349.pdf)
 
 ## Requirements (for Python)
 
