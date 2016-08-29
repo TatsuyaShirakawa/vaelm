@@ -351,7 +351,7 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_valid_batch:
 
             print( "eval on validation dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, valid_batches, vocab, word_keep_rate=word_keep_rate, UNK=UNK, alpha=alpha)
+            evaluate(model, valid_batches, vocab, word_keep_rate=1.0, UNK=UNK, alpha=alpha)
             print()
 
             next_eval_valid_batch += eval_valid_every_batches
@@ -359,7 +359,7 @@ for epoch in range(max_epoch):
         if num_trained_batches == next_eval_train_batch:
 
             print( "eval on training dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            evaluate(model, train_head_batches, vocab, word_keep_rate=word_keep_rate, UNK=UNK, alpha=alpha)
+            evaluate(model, train_head_batches, vocab, word_keep_rate=1.0, UNK=UNK, alpha=alpha)
             print()
 
             next_eval_train_batch += eval_train_every_batches
@@ -387,9 +387,9 @@ print( "save optimizer to {} ...".format(optimizer_file) )
 save_hdf5(optimizer_file, optimizer)
 
 print( "eval on validation dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-evaluate(model, valid_batches, word_keep_rate=word_keep_rate, UNK=UNK, alpha=1.0)
+evaluate(model, valid_batches, word_keep_rate=1.0,  UNK=UNK, alpha=1.0)
 print()
 
 print( "eval on training dataset ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-evaluate(model, train_head_batches, word_keep_rate=word_keep_rate, UNK=UNK, alpha=1.0)
+evaluate(model, train_head_batches, word_keep_rate=1.0, UNK=UNK, alpha=1.0)
 print()        
