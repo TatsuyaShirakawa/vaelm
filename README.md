@@ -20,6 +20,6 @@ cd /path/to/this_directory/
 mkdir work && cd work
 bash ../sh/download_ptb.sh
 bash ../sh/prepare.sh ./ptb
-bash ../sh/run.sh
+bash ../sh/run.sh ./ptb
 ```
 
